@@ -120,20 +120,25 @@ The initial host PC configuration is:
 The GitHub repository was cloned to the local PC so that the project files can be edited using Visual Studio Code.
 
 - Local Workspace:
+```
 D:\KV260_Workspace
-
+```
 - Local Repository:
+```
 D:\KV260_Workspace\EEGNet-KV260-VitisAI
-
+```
 - Clone Command:
 The repository was cloned using:
-
-git clone 
-
+```
+git clone <repository url> 
+```
 ## 8. Verify the Local Repository
 
 After cloning the repository, the repository directory was opened:
+```
 cd D:\KV260_Workspace\EEGNet-KV260-VitisAI
-
+```
 The Git repository was then verified using:
+```
 git status
+```
