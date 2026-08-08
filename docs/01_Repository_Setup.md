@@ -92,20 +92,14 @@ Directory Description:
 
 The project will use the following development environment:
 
-Windows 11 as the host operating system
-Visual Studio Code as the primary development environment.
-
-WSL2 as the Linux development environment.
-
-Ubuntu 22.04 LTS as the Linux distribution.
-
-Git for version control.
-
-GitHub as the remote repository.
-
-Docker for containerized development environments.
-
-Vitis AI for AI model deployment and acceleration on the Kria KV260
+- Windows 11 as the host operating system
+- Visual Studio Code as the primary development environment.
+- WSL2 as the Linux development environment.
+- Ubuntu 22.04 LTS as the Linux distribution.
+- Git for version control.
+- GitHub as the remote repository.
+- Docker for containerized development environments.
+- Vitis AI for AI model deployment and acceleration on the Kria KV260
 
 The individual components will be installed and configured in subsequent stages of the project.
  
@@ -125,20 +119,16 @@ The initial host PC configuration is:
 
 The GitHub repository was cloned to the local PC so that the project files can be edited using Visual Studio Code.
 
-Local Workspace:
+- Local Workspace:
 D:\KV260_Workspace
 
-Local Repository:
+- Local Repository:
 D:\KV260_Workspace\EEGNet-KV260-VitisAI
 
-Clone Command:
+- Clone Command:
 The repository was cloned using:
 
-git clone <repository-url>
-
-
-Replace <repository-url> with the URL of the GitHub repository.
-
+git clone 
 
 ## 8. Verify the Local Repository
 
