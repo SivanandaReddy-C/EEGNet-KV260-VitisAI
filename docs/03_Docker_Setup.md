@@ -9,7 +9,7 @@ docker --version
 ```
 The installed Docker version is:
 
-```
+```text
 Docker version 29.7.2, build a7dca6
 ```
 
@@ -53,7 +53,7 @@ Before configuring Docker Desktop WSL integration, the installed WSL distributio
 wsl --list --verbose
 ```
 The result was:
-```
+```text
 NAME            STATE      VERSION
 * Ubuntu-22.04  Running    2
   docker-desktop Running   2
@@ -68,14 +68,14 @@ This confirmed that Ubuntu 22.04 was running under WSL 2 and was the default dis
 Docker Desktop provides WSL integration so that Docker commands can be used directly from the Ubuntu WSL environment.
 
 The WSL integration settings were opened from:
-```
+```text
 Docker Desktop
 → Settings
 → Resources
 → WSL Integration
 ```
 The option:
-```
+```text
 Enable integration with my default WSL distro
 ```
 was enabled.
@@ -83,11 +83,11 @@ was enabled.
 Since Ubuntu-22.04 was already the default WSL distribution, it was not necessary to select it separately under the additional distributions.
 
 The Docker Engine was then restarted using:
-```
+```text
 Apply & Restart Engine
 ```
 After the restart, Docker Desktop continued to show:
-```
+```text
 Engine running
 ```
 
@@ -100,7 +100,7 @@ The Docker version was checked using:
 docker --version
 ```
 The result was:
-```
+```text
 Docker version 29.7.2, build a7dca6
 ```
 This confirmed that the Docker CLI was available inside the WSL Ubuntu environment.
@@ -110,7 +110,7 @@ The Docker Engine was then tested using:
 docker info
 ```
 The initial attempt returned a permission error:
-```
+```text
 permission denied while trying to connect to the Docker API
 at unix:///var/run/docker.sock
 ```
@@ -123,11 +123,11 @@ The Docker socket was inspected using:
 ls -l /var/run/docker.sock
 ```
 The result showed:
-```
+```text
 srw-rw---- 1 root docker ... /var/run/docker.sock
 ```
 This showed that the Docker socket was owned by:
-```
+```text
 root:docker
 ```
 with permissions allowing access to the owner and the docker group.
@@ -143,7 +143,7 @@ The existence and membership of the Docker group were then checked using:
 getent group docker
 ```
 The result was:
-```
+```text
 docker:x:1001:vitisdev
 ```
 This confirmed that the vitisdev user was already a member of the docker group, but the existing WSL session had not yet picked up the updated group membership.
@@ -151,11 +151,11 @@ This confirmed that the vitisdev user was already a member of the docker group, 
 ### Restart WSL to Apply Docker Group Membership
 
 The WSL environment was completely stopped from Windows Command Prompt using:
-```bash
+```cmd
 wsl --shutdown
 ```
 Ubuntu 22.04 was then started again using:
-``` bash
+```cmd
 wsl -d Ubuntu-22.04
 ```
 After starting a new WSL session, the user's group membership was refreshed.
@@ -167,7 +167,7 @@ docker info
 This time the command completed successfully.
 
 The relevant Docker Engine information was:
-```
+```text
 Server Version: 29.7.2
 Operating System: Docker Desktop
 OSType: linux
@@ -187,13 +187,13 @@ docker run hello-world
 Docker successfully downloaded the hello-world:latest image from Docker Hub and created a container from the image.
 
 The command returned:
-```
+```text
 Hello from Docker!
 ```
 This message shows that your installation appears to be working correctly.
 
 The successful execution confirmed that:
-```
+```text
 Docker CLI is available from WSL.
 WSL can communicate with the Docker Engine.
 Docker can access Docker Hub.
