@@ -1024,3 +1024,516 @@ Create:
 ```bash
 nano scripts/07_inspect_eegnet_dpu.py
 ```
+Write this code:
+```bash
+import sys
+from pathlib import Path
+
+import torch
+from pytorch_nndct.apis import Inspector
+
+
+# ============================================================
+# Add project root to Python path
+# ============================================================
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+sys.path.insert(
+    0,
+    str(PROJECT_ROOT)
+)
+
+
+# ============================================================
+# Import EEGNet
+# ============================================================
+
+from training.eegnet_dpu import EEGNetDPU
+
+
+# ============================================================
+# Configuration
+# ============================================================
+
+DPU_ARCH = "DPUCZDX8G_ISA1_B4096"
+
+INPUT_SHAPE = (
+    1,
+    1,
+    22,
+    1000
+)
+
+
+# ============================================================
+# Create model
+# ============================================================
+
+model = EEGNetDPU(
+    num_classes=4
+)
+
+model.eval()
+
+
+# ============================================================
+# Create dummy input tensor
+# ============================================================
+
+dummy_input = torch.randn(
+    INPUT_SHAPE,
+    dtype=torch.float32
+)
+
+
+# ============================================================
+# Create Vitis AI Inspector
+# ============================================================
+
+inspector = Inspector(
+    DPU_ARCH
+)
+
+
+# ============================================================
+# Run inspection
+# ============================================================
+
+print("=" * 60)
+print(" VITIS AI DPU INSPECTION")
+print("=" * 60)
+
+print("Project root     :", PROJECT_ROOT)
+print("DPU architecture :", DPU_ARCH)
+print("Input shape      :", tuple(dummy_input.shape))
+
+print("\nStarting inspection...\n")
+
+inspector.inspect(
+    model,
+    (dummy_input,),
+    device=torch.device("cpu")
+)
+
+print("\nInspection completed.")
+```
+When you run this code:
+```
+You will get ERROR
+```
+
+### What the error tells us:
+
+The important line is:
+```
+filter_depthwise_conv2d
+UnboundLocalError: local variable 'channel_parallel' referenced before assignment
+```
+This happens while Inspector is allocating the depthwise convolution.
+
+The actual problem is in our architecture:
+```
+Spatial Depthwise Conv2D
+kernel = (22, 1)
+```
+For DPUCZDX8G_ISA1_B4096, Vitis AI 3.0 supports depthwise-convolution kernels only within the DPU limits; the documented depthwise kernel range is `[1,16]`.
+
+Our kernel height is 22, because we attempted to collapse all 22 EEG channels in one depthwise convolution.
+
+So this is not a Python/import problem anymore. The Inspector reached the model and failed specifically on the DPU compatibility of that layer.
+
+Therefore: do NOT train this architecture yet.
+
+We should fix the architecture first.
+
+Next meaningful step
+
+We need to redesign this part:
+```
+8 channels
+    ↓
+Depthwise Conv (22,1)   ← ❌ DPU-incompatible
+    ↓
+1 spatial channel
+```
+into a DPU-compatible spatial operation using kernels ≤ 16.
+
+A clean option is to replace the single (22,1) operation with two spatial convolutions, for example:
+```
+Input: [1, 1, 22, 1000]
+
+Temporal Conv
+kernel (1,16)
+        ↓
+[1, 8, 22, 985]
+
+Spatial Conv
+kernel (11,1)
+        ↓
+[1, 8, 12, 985]
+
+Spatial Conv
+kernel (12,1)
+        ↓
+[1, 8, 1, 985]
+```
+Both kernels are within the DPU's supported kernel range. The DPU architecture has channel_parallel = 16, and its conventional convolution kernel width/height limits are also bounded accordingly.
+
+Then we can continue with the temporal/separable part.
+```
+Our pipeline remains
+BCI IV 2a
+   ↓
+Frozen preprocessing
+   ↓
+Frozen train/test split
+   ↓
+DPU-compatible EEGNet
+   ↓
+Inspector
+   ↓
+Train
+   ↓
+FP32 validation
+   ↓
+ONNX
+   ↓
+INT8 quantization
+   ↓
+Compilation
+   ↓
+KV260 DPU
+```
+Current Step 16 conclusion:
+```
+❌ Current EEGNetDPU architecture is not acceptable because the (22,1) depthwise convolution violates the DPU kernel constraint.
+```
+We should modify training/eegnet_dpu.py now, then rerun Inspector before doing any training.
+
+## Step 17
+Nothing is there in this step
+
+## Step 18 - Replace the model with a depthwise-free DPU architecture
+Replace the entire `training/eegnet_dpu.py` with this:
+```
+import torch
+import torch.nn as nn
+
+
+class EEGNetDPU(nn.Module):
+
+    def __init__(self, num_classes=4):
+        super().__init__()
+
+        # ==================================================
+        # Block 1: Temporal feature extraction
+        # ==================================================
+
+        self.temporal_conv = nn.Conv2d(
+            in_channels=1,
+            out_channels=16,
+            kernel_size=(1, 16),
+            stride=(1, 1),
+            padding=(0, 0),
+            bias=False
+        )
+
+        self.temporal_bn = nn.BatchNorm2d(16)
+        self.temporal_relu = nn.ReLU()
+
+        # ==================================================
+        # Block 2: Spatial feature extraction
+        #
+        # 22 EEG channels are reduced:
+        #
+        # 22 -> 7 -> 1
+        #
+        # Both kernels are <= 16.
+        # No depthwise convolution is used.
+        # ==================================================
+
+        self.spatial_conv1 = nn.Conv2d(
+            in_channels=16,
+            out_channels=16,
+            kernel_size=(16, 1),
+            stride=(1, 1),
+            padding=(0, 0),
+            bias=False
+        )
+
+        self.spatial_bn1 = nn.BatchNorm2d(16)
+        self.spatial_relu1 = nn.ReLU()
+
+        self.spatial_conv2 = nn.Conv2d(
+            in_channels=16,
+            out_channels=16,
+            kernel_size=(7, 1),
+            stride=(1, 1),
+            padding=(0, 0),
+            bias=False
+        )
+
+        self.spatial_bn2 = nn.BatchNorm2d(16)
+        self.spatial_relu2 = nn.ReLU()
+
+        self.pool1 = nn.AvgPool2d(
+            kernel_size=(1, 4),
+            stride=(1, 4)
+        )
+
+        # ==================================================
+        # Block 3: Temporal feature extraction
+        #
+        # Ordinary Conv2d instead of depthwise Conv2d.
+        # ==================================================
+
+        self.temporal_conv2 = nn.Conv2d(
+            in_channels=16,
+            out_channels=16,
+            kernel_size=(1, 8),
+            stride=(1, 1),
+            padding=(0, 0),
+            bias=False
+        )
+
+        self.temporal_bn2 = nn.BatchNorm2d(16)
+        self.temporal_relu2 = nn.ReLU()
+
+        # ==================================================
+        # Block 4: Pointwise feature mixing
+        # ==================================================
+
+        self.pointwise_conv = nn.Conv2d(
+            in_channels=16,
+            out_channels=16,
+            kernel_size=(1, 1),
+            stride=(1, 1),
+            padding=(0, 0),
+            bias=False
+        )
+
+        self.pointwise_bn = nn.BatchNorm2d(16)
+        self.pointwise_relu = nn.ReLU()
+
+        self.pool2 = nn.AvgPool2d(
+            kernel_size=(1, 8),
+            stride=(1, 8)
+        )
+
+        # ==================================================
+        # Classifier
+        # ==================================================
+
+        self.classifier = nn.Linear(
+            16 * 29,
+            num_classes
+        )
+
+    def forward(self, x):
+
+        # ==================================================
+        # Block 1
+        # ==================================================
+
+        x = self.temporal_conv(x)
+        x = self.temporal_bn(x)
+        x = self.temporal_relu(x)
+
+        # ==================================================
+        # Block 2
+        # ==================================================
+
+        x = self.spatial_conv1(x)
+        x = self.spatial_bn1(x)
+        x = self.spatial_relu1(x)
+
+        x = self.spatial_conv2(x)
+        x = self.spatial_bn2(x)
+        x = self.spatial_relu2(x)
+
+        x = self.pool1(x)
+
+        # ==================================================
+        # Block 3
+        # ==================================================
+
+        x = self.temporal_conv2(x)
+        x = self.temporal_bn2(x)
+        x = self.temporal_relu2(x)
+
+        # ==================================================
+        # Block 4
+        # ==================================================
+
+        x = self.pointwise_conv(x)
+        x = self.pointwise_bn(x)
+        x = self.pointwise_relu(x)
+
+        x = self.pool2(x)
+
+        # ==================================================
+        # Classifier
+        # ==================================================
+
+        x = torch.flatten(x, start_dim=1)
+
+        x = self.classifier(x)
+
+        return x
+
+
+# ======================================================
+# Architecture verification
+# ======================================================
+
+if __name__ == "__main__":
+
+    model = EEGNetDPU(num_classes=4)
+    model.eval()
+
+    dummy_input = torch.randn(
+        1, 1, 22, 1000
+    )
+
+    with torch.no_grad():
+
+        x = dummy_input
+
+        print("Input              :", tuple(x.shape))
+
+        # Block 1
+        x = model.temporal_conv(x)
+        print("Temporal Conv 1    :", tuple(x.shape))
+
+        x = model.temporal_bn(x)
+        x = model.temporal_relu(x)
+
+        # Block 2
+        x = model.spatial_conv1(x)
+        print("Spatial Conv 1     :", tuple(x.shape))
+
+        x = model.spatial_bn1(x)
+        x = model.spatial_relu1(x)
+
+        x = model.spatial_conv2(x)
+        print("Spatial Conv 2     :", tuple(x.shape))
+
+        x = model.spatial_bn2(x)
+        x = model.spatial_relu2(x)
+
+        x = model.pool1(x)
+        print("Pool 1             :", tuple(x.shape))
+
+        # Block 3
+        x = model.temporal_conv2(x)
+        print("Temporal Conv 2    :", tuple(x.shape))
+
+        x = model.temporal_bn2(x)
+        x = model.temporal_relu2(x)
+
+        # Block 4
+        x = model.pointwise_conv(x)
+        print("Pointwise Conv     :", tuple(x.shape))
+
+        x = model.pointwise_bn(x)
+        x = model.pointwise_relu(x)
+
+        x = model.pool2(x)
+        print("Pool 2             :", tuple(x.shape))
+
+        # Classifier
+        x = torch.flatten(x, start_dim=1)
+        print("Flatten            :", tuple(x.shape))
+
+        x = model.classifier(x)
+        print("Output             :", tuple(x.shape))
+
+    # ==================================================
+    # Parameter count
+    # ==================================================
+
+    total_params = sum(
+        p.numel()
+        for p in model.parameters()
+    )
+
+    trainable_params = sum(
+        p.numel()
+        for p in model.parameters()
+        if p.requires_grad
+    )
+
+    print()
+    print("Total parameters    :", total_params)
+    print("Trainable parameters:", trainable_params)
+```
+Now run
+### 1. Verify tensor dimensions
+```
+python training/eegnet_dpu.py
+```
+Expected:
+```
+Input              : (1, 1, 22, 1000)
+Temporal Conv 1    : (1, 16, 22, 985)
+Spatial Conv 1     : (1, 16, 7, 985)
+Spatial Conv 2     : (1, 16, 1, 985)
+Pool 1             : (1, 16, 1, 246)
+Temporal Conv 2    : (1, 16, 1, 239)
+Pointwise Conv     : (1, 16, 1, 239)
+Pool 2             : (1, 16, 1, 29)
+Flatten            : (1, 464)
+Output             : (1, 4)
+```
+
+### 2. Then run Inspector
+```
+python scripts/07_inspect_eegnet_dpu.py
+```
+This is the key test.
+
+We have now eliminated both depthwise convolution layers that were causing the Inspector to enter `filter_depthwise_conv2d`.
+
+This gives a successful DPU compatibility result.
+
+The key line is:
+```
+All the operators are assigned to the DPU
+```
+and:
+```
+=>Finish inspecting.
+Inspection completed.
+```
+So our current architecture is DPU-compatible according to the Vitis AI Inspector for:
+```
+DPUCZDX8G_ISA1_B4096
+Input: (1, 1, 22, 1000)
+```
+**Current frozen architecture**
+```
+Input              (1,1,22,1000)
+        ↓
+Conv2D              (1,16)
+        ↓
+Conv2D              (16,1)
+        ↓
+Conv2D              (7,1)
+        ↓
+AvgPool             (1,4)
+        ↓
+Conv2D              (1,8)
+        ↓
+Conv2D              (1,1)
+        ↓
+AvgPool             (1,8)
+        ↓
+Flatten
+        ↓
+Linear
+        ↓
+4 classes
+```
+Do not modify `training/eegnet_dpu.py` now.
+
