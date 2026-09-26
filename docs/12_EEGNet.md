@@ -2028,6 +2028,41 @@ Only after the dimensions are correct:
 ```bash
 python scripts/07_inspect_eegnet_dpu.py
 ```
+The decisive result is:
+```
+[VAIQ_NOTE]: All the operators are assigned to the DPU
+```
+for:
+```
+DPU: DPUCZDX8G_ISA1_B4096
+Input: (1, 1, 22, 1000)
+```
+So we now have a solid architecture candidate that passes both gates:
+```
+DPU-Adapted EEGNet
+        │
+        ├── Tensor verification ✓
+        │
+        ├── 37,188 parameters
+        │
+        └── Vitis AI Inspector ✓
+              All operators → DPU
+```
+
 ### Freeze this architecture
 
 Do not modify `training/eegnet_dpu.py` now.
+
+The next step is Step 22 — train this exact architecture from scratch using the already frozen:
+```
+datasets/processed/EEGNet_train_test_split.npz
+```
+We should also keep the previous model as Experiment 1 for comparison.
+
+Before training, however, there is one necessary correction: our existing train_eegnet_dpu.py was written around the previous 10,468-parameter architecture. Because the new architecture has 37,188 parameters and a 448-feature classifier, we should update the training script to load the current architecture and save this experiment separately.
+
+I recommend saving it as:
+```
+models/EEGNetDPU_Experiment2_FP32.pth
+```
+rather than overwriting Experiment 1.
