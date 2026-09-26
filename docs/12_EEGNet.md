@@ -654,7 +654,7 @@ BCI Competition IV Dataset 2a
           EEGNet
 ```
 ### 11. Frozen preprocessing specification
-P| Parameter     | Final decision                 |
+| Parameter     | Final decision                 |
 | ------------- | ------------------------------ |
 | Dataset       | BCI Competition IV Dataset 2a  |
 | Files         | A01T–A09T                      |
@@ -1537,3 +1537,497 @@ Linear
 ```
 Do not modify `training/eegnet_dpu.py` now.
 
+## Step 19 — Train the DPU-Compatible EEGNet
+
+Goal: Train the exact architecture that just passed Vitis AI Inspector, using the frozen train/test split.
+
+We will not change the dataset, preprocessing, or split.
+
+### 19.1 Create the training script
+
+From:
+```
+/workspace/EEGNet-KV260-VitisAI
+```
+run:
+```bash
+nano training/train_eegnet_dpu.py
+```
+Write the cript and Save the file
+
+In nano:
+```
+Ctrl + O
+Enter
+Ctrl + X
+```
+### 19.2 Run training
+```
+python training/train_eegnet_dpu.py
+```
+### What we expect
+
+The script should confirm:
+```
+X_train shape  : (2073, 1, 22, 1000)
+y_train shape  : (2073,)
+X_test shape   : (519, 1, 22, 1000)
+y_test shape   : (519,)
+```
+Then it will train for 50 epochs and finally report:
+```
+Accuracy
+Precision
+Recall
+F1-Score
+```
+and create:
+```
+models/EEGNetDPU_FP32.pth
+```
+### Important
+
+For this step, do not change:
+```
+dataset
+preprocessing
+train/test split
+architecture
+number of classes
+random seed
+```
+### Result
+| Metric                  |                      Result |
+| ----------------------- | --------------------------: |
+| Parameters              |                      10,468 |
+| Final training accuracy |                 **100.00%** |
+| Test accuracy           |                  **45.66%** |
+| Test precision          |                  **45.05%** |
+| Test recall             |                  **45.70%** |
+| Test F1                 |                  **44.43%** |
+| Model                   | `models/EEGNetDPU_FP32.pth` |
+
+What this tells us
+
+The important observation is:
+```
+Training accuracy → 100%
+Test accuracy     → 45.66%
+```
+That is a large generalization gap.
+
+So the current DPU-compatible architecture is learning the training set very well, but its performance on the frozen test set is poor.
+
+We should not accept this model as our final EEGNet.
+
+The next step should be diagnosis, not more training.
+
+## Step 21 - DPU-adapted EEGNet
+
+We preserve EEGNet's fundamental idea:
+
+temporal filtering → spatial filtering → temporal/separable feature extraction → classification
+
+but adapt it systematically to the KV260 DPU:
+```
+Input
+[1, 1, 22, 1000]
+        │
+        ▼
+Temporal Conv
+16 filters
+kernel (1,16)
+        │
+        ▼
+Temporal Conv
+16 filters
+kernel (1,16)
+        │
+        ▼
+Temporal Conv
+16 filters
+kernel (1,16)
+        │
+        ▼
+Spatial Conv
+32 filters
+kernel (11,1)
+        │
+        ▼
+Spatial Conv
+32 filters
+kernel (12,1)
+        │
+        ▼
+Spatial dimension → 1
+        │
+        ▼
+AvgPool (1,4)
+        │
+        ▼
+Temporal Conv
+32 filters
+kernel (1,8)
+        │
+        ▼
+Conv 1×1
+16 filters
+        │
+        ▼
+AvgPool (1,8)
+        │
+        ▼
+Flatten
+        │
+        ▼
+Dropout
+        │
+        ▼
+Linear
+4 classes
+```
+
+Why this is a better-founded choice
+- Temporal filtering remains central, as in EEGNet.
+- Instead of using an unsupported/buggy depthwise path, spatial filtering is implemented using standard Conv2D.
+- The original EEG spatial kernel of 22 cannot be directly used as a DPU Conv2D kernel because the DPU limits each kernel dimension to 16.
+- Therefore 22 → 11 → 1 is a factorization of the spatial dimension rather than an arbitrary reduction to 7 and then 1.
+- We increase the spatial feature capacity from 16 to 32 channels, so we're not forcing the entire EEG representation through only 16 filters.
+- We use multiple temporal filters before spatial extraction rather than immediately forcing the signal through a very small representation.
+- We can add dropout after feature extraction, which directly addresses the 100% training / ~43–46% test behavior we observed.
+
+Replace the complete contents of:
+```
+nano training/eegnet_dpu.py
+```
+with this:
+```bash
+import torch
+import torch.nn as nn
+
+
+class EEGNetDPU(nn.Module):
+
+    def __init__(self, num_classes=4):
+        super().__init__()
+
+        # ==================================================
+        # Block 1: Temporal feature extraction
+        # ==================================================
+
+        self.temporal_conv1 = nn.Conv2d(
+            in_channels=1,
+            out_channels=16,
+            kernel_size=(1, 16),
+            stride=(1, 1),
+            padding=(0, 0),
+            bias=False
+        )
+
+        self.temporal_bn1 = nn.BatchNorm2d(16)
+        self.temporal_relu1 = nn.ReLU()
+
+        # Additional temporal filtering
+        self.temporal_conv2 = nn.Conv2d(
+            in_channels=16,
+            out_channels=16,
+            kernel_size=(1, 16),
+            stride=(1, 1),
+            padding=(0, 0),
+            bias=False
+        )
+
+        self.temporal_bn2 = nn.BatchNorm2d(16)
+        self.temporal_relu2 = nn.ReLU()
+
+        # Additional temporal filtering
+        self.temporal_conv3 = nn.Conv2d(
+            in_channels=16,
+            out_channels=16,
+            kernel_size=(1, 16),
+            stride=(1, 1),
+            padding=(0, 0),
+            bias=False
+        )
+
+        self.temporal_bn3 = nn.BatchNorm2d(16)
+        self.temporal_relu3 = nn.ReLU()
+
+        # ==================================================
+        # Block 2: Spatial feature extraction
+        #
+        # 22 EEG channels
+        #
+        # 22 -> 12 -> 1
+        #
+        # Both kernels are <= 16.
+        # No depthwise convolution is used.
+        # ==================================================
+
+        self.spatial_conv1 = nn.Conv2d(
+            in_channels=16,
+            out_channels=32,
+            kernel_size=(11, 1),
+            stride=(1, 1),
+            padding=(0, 0),
+            bias=False
+        )
+
+        self.spatial_bn1 = nn.BatchNorm2d(32)
+        self.spatial_relu1 = nn.ReLU()
+
+        self.spatial_conv2 = nn.Conv2d(
+            in_channels=32,
+            out_channels=32,
+            kernel_size=(12, 1),
+            stride=(1, 1),
+            padding=(0, 0),
+            bias=False
+        )
+
+        self.spatial_bn2 = nn.BatchNorm2d(32)
+        self.spatial_relu2 = nn.ReLU()
+
+        # ==================================================
+        # Temporal downsampling
+        # ==================================================
+
+        self.pool1 = nn.AvgPool2d(
+            kernel_size=(1, 4),
+            stride=(1, 4)
+        )
+
+        # ==================================================
+        # Block 3: Temporal feature extraction
+        # ==================================================
+
+        self.temporal_conv4 = nn.Conv2d(
+            in_channels=32,
+            out_channels=32,
+            kernel_size=(1, 8),
+            stride=(1, 1),
+            padding=(0, 0),
+            bias=False
+        )
+
+        self.temporal_bn4 = nn.BatchNorm2d(32)
+        self.temporal_relu4 = nn.ReLU()
+
+        # ==================================================
+        # Block 4: Channel mixing
+        # ==================================================
+
+        self.pointwise_conv = nn.Conv2d(
+            in_channels=32,
+            out_channels=16,
+            kernel_size=(1, 1),
+            stride=(1, 1),
+            padding=(0, 0),
+            bias=False
+        )
+
+        self.pointwise_bn = nn.BatchNorm2d(16)
+        self.pointwise_relu = nn.ReLU()
+
+        # ==================================================
+        # Temporal downsampling
+        # ==================================================
+
+        self.pool2 = nn.AvgPool2d(
+            kernel_size=(1, 8),
+            stride=(1, 8)
+        )
+
+        # ==================================================
+        # Classifier
+        # ==================================================
+
+        self.classifier = nn.Linear(
+            16 * 28,
+            num_classes
+        )
+
+    def forward(self, x):
+
+        # ==================================================
+        # Block 1: Temporal filtering
+        # ==================================================
+
+        x = self.temporal_conv1(x)
+        x = self.temporal_bn1(x)
+        x = self.temporal_relu1(x)
+
+        x = self.temporal_conv2(x)
+        x = self.temporal_bn2(x)
+        x = self.temporal_relu2(x)
+
+        x = self.temporal_conv3(x)
+        x = self.temporal_bn3(x)
+        x = self.temporal_relu3(x)
+
+        # ==================================================
+        # Block 2: Spatial filtering
+        # ==================================================
+
+        x = self.spatial_conv1(x)
+        x = self.spatial_bn1(x)
+        x = self.spatial_relu1(x)
+
+        x = self.spatial_conv2(x)
+        x = self.spatial_bn2(x)
+        x = self.spatial_relu2(x)
+
+        # ==================================================
+        # Pool 1
+        # ==================================================
+
+        x = self.pool1(x)
+
+        # ==================================================
+        # Block 3: Temporal filtering
+        # ==================================================
+
+        x = self.temporal_conv4(x)
+        x = self.temporal_bn4(x)
+        x = self.temporal_relu4(x)
+
+        # ==================================================
+        # Block 4: Channel mixing
+        # ==================================================
+
+        x = self.pointwise_conv(x)
+        x = self.pointwise_bn(x)
+        x = self.pointwise_relu(x)
+
+        # ==================================================
+        # Pool 2
+        # ==================================================
+
+        x = self.pool2(x)
+
+        # ==================================================
+        # Classifier
+        # ==================================================
+
+        x = torch.flatten(x, start_dim=1)
+
+        x = self.classifier(x)
+
+        return x
+
+
+# ==========================================================
+# Architecture verification
+# ==========================================================
+
+if __name__ == "__main__":
+
+    model = EEGNetDPU(num_classes=4)
+    model.eval()
+
+    dummy_input = torch.randn(
+        1, 1, 22, 1000
+    )
+
+    with torch.no_grad():
+
+        x = dummy_input
+
+        print("Input              :", tuple(x.shape))
+
+        # Temporal block
+        x = model.temporal_conv1(x)
+        print("Temporal Conv 1    :", tuple(x.shape))
+
+        x = model.temporal_bn1(x)
+        x = model.temporal_relu1(x)
+
+        x = model.temporal_conv2(x)
+        print("Temporal Conv 2    :", tuple(x.shape))
+
+        x = model.temporal_bn2(x)
+        x = model.temporal_relu2(x)
+
+        x = model.temporal_conv3(x)
+        print("Temporal Conv 3    :", tuple(x.shape))
+
+        x = model.temporal_bn3(x)
+        x = model.temporal_relu3(x)
+
+        # Spatial block
+        x = model.spatial_conv1(x)
+        print("Spatial Conv 1     :", tuple(x.shape))
+
+        x = model.spatial_bn1(x)
+        x = model.spatial_relu1(x)
+
+        x = model.spatial_conv2(x)
+        print("Spatial Conv 2     :", tuple(x.shape))
+
+        x = model.spatial_bn2(x)
+        x = model.spatial_relu2(x)
+
+        # Pool
+        x = model.pool1(x)
+        print("Pool 1             :", tuple(x.shape))
+
+        # Temporal block
+        x = model.temporal_conv4(x)
+        print("Temporal Conv 4    :", tuple(x.shape))
+
+        x = model.temporal_bn4(x)
+        x = model.temporal_relu4(x)
+
+        # Pointwise
+        x = model.pointwise_conv(x)
+        print("Pointwise Conv     :", tuple(x.shape))
+
+        x = model.pointwise_bn(x)
+        x = model.pointwise_relu(x)
+
+        # Pool
+        x = model.pool2(x)
+        print("Pool 2             :", tuple(x.shape))
+
+        # Classifier
+        x = torch.flatten(x, start_dim=1)
+        print("Flatten            :", tuple(x.shape))
+
+        x = model.classifier(x)
+        print("Output             :", tuple(x.shape))
+
+    # ======================================================
+    # Parameter count
+    # ======================================================
+
+    total_params = sum(
+        p.numel()
+        for p in model.parameters()
+    )
+
+    trainable_params = sum(
+        p.numel()
+        for p in model.parameters()
+        if p.requires_grad
+    )
+
+    print()
+    print("Total parameters    :", total_params)
+    print("Trainable parameters:", trainable_params)
+```
+### Verify the tensor dimensions
+
+Run:
+```bash
+python training/eegnet_dpu.py
+```
+
+### Then run Inspector
+
+Only after the dimensions are correct:
+```bash
+python scripts/07_inspect_eegnet_dpu.py
+```
+### Freeze this architecture
+
+Do not modify `training/eegnet_dpu.py` now.
