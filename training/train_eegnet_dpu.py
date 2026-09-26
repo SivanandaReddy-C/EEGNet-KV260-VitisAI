@@ -5,7 +5,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score
+)
 
 from eegnet_dpu import EEGNetDPU
 
@@ -17,8 +22,10 @@ from eegnet_dpu import EEGNetDPU
 SEED = 42
 
 BATCH_SIZE = 32
-EPOCHS = 50
+EPOCHS = 100
+
 LEARNING_RATE = 0.001
+WEIGHT_DECAY = 1e-4
 
 NUM_CLASSES = 4
 
@@ -33,7 +40,10 @@ DATA_FILE = (
 
 MODEL_DIR = PROJECT_ROOT / "models"
 
-MODEL_FILE = MODEL_DIR / "EEGNetDPU_FP32.pth"
+MODEL_FILE = (
+    MODEL_DIR
+    / "EEGNetDPU_Experiment2_FP32.pth"
+)
 
 
 # ============================================================
@@ -47,14 +57,20 @@ torch.manual_seed(SEED)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(SEED)
 
+
+# ============================================================
+# Header
+# ============================================================
+
 print("=" * 70)
-print(" EEGNet DPU-COMPATIBLE TRAINING")
+print(" EEGNet DPU-COMPATIBLE TRAINING - EXPERIMENT 2")
 print("=" * 70)
 
 print("Seed           :", SEED)
 print("Batch size     :", BATCH_SIZE)
 print("Epochs         :", EPOCHS)
 print("Learning rate  :", LEARNING_RATE)
+print("Weight decay   :", WEIGHT_DECAY)
 
 print()
 print("Dataset        :", DATA_FILE)
@@ -152,26 +168,41 @@ model = EEGNetDPU(
 
 model = model.to(device)
 
-print()
-print("Model          : EEGNetDPU")
-
 total_params = sum(
     p.numel()
     for p in model.parameters()
 )
 
+print()
+print("Model          : EEGNetDPU")
 print("Parameters     :", total_params)
 
 
 # ============================================================
-# Loss and optimizer
+# Loss
 # ============================================================
 
 criterion = nn.CrossEntropyLoss()
 
-optimizer = torch.optim.Adam(
+
+# ============================================================
+# Optimizer
+# ============================================================
+
+optimizer = torch.optim.AdamW(
     model.parameters(),
-    lr=LEARNING_RATE
+    lr=LEARNING_RATE,
+    weight_decay=WEIGHT_DECAY
+)
+
+
+# ============================================================
+# Learning-rate scheduler
+# ============================================================
+
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    optimizer,
+    T_max=EPOCHS
 )
 
 
@@ -181,7 +212,7 @@ optimizer = torch.optim.Adam(
 
 print()
 print("=" * 70)
-print(" STARTING TRAINING")
+print(" STARTING TRAINING - EXPERIMENT 2")
 print("=" * 70)
 
 for epoch in range(EPOCHS):
@@ -228,20 +259,25 @@ for epoch in range(EPOCHS):
     epoch_loss = running_loss / total
     epoch_accuracy = correct / total
 
+    current_lr = optimizer.param_groups[0]["lr"]
+
     print(
-        f"Epoch [{epoch + 1:02d}/{EPOCHS}] "
+        f"Epoch [{epoch + 1:03d}/{EPOCHS}] "
         f"Loss: {epoch_loss:.4f} "
-        f"Train Accuracy: {epoch_accuracy * 100:.2f}%"
+        f"Train Accuracy: {epoch_accuracy * 100:.2f}% "
+        f"LR: {current_lr:.6f}"
     )
+
+    scheduler.step()
 
 
 # ============================================================
-# Evaluation on frozen test set
+# Final test-set evaluation
 # ============================================================
 
 print()
 print("=" * 70)
-print(" FINAL TEST SET EVALUATION")
+print(" FINAL TEST SET EVALUATION - EXPERIMENT 2")
 print("=" * 70)
 
 model.eval()
@@ -272,7 +308,7 @@ with torch.no_grad():
 
 
 # ============================================================
-# Classification metrics
+# Metrics
 # ============================================================
 
 accuracy = accuracy_score(
@@ -310,7 +346,7 @@ print(f"F1-Score   : {f1 * 100:.2f}%")
 
 
 # ============================================================
-# Save trained model
+# Save model
 # ============================================================
 
 MODEL_DIR.mkdir(
@@ -329,5 +365,5 @@ print(MODEL_FILE)
 
 print()
 print("=" * 70)
-print(" TRAINING COMPLETED")
+print(" EXPERIMENT 2 TRAINING COMPLETED")
 print("=" * 70)
