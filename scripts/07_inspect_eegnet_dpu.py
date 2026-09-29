@@ -6,19 +6,17 @@ from pytorch_nndct.apis import Inspector
 
 
 # ============================================================
-# Add project root to Python path
+# Project root
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-sys.path.insert(
-    0,
-    str(PROJECT_ROOT)
-)
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 # ============================================================
-# Import EEGNet
+# Import final model
 # ============================================================
 
 from training.eegnet_dpu import EEGNetDPU
@@ -50,7 +48,7 @@ model.eval()
 
 
 # ============================================================
-# Create dummy input tensor
+# Create dummy input
 # ============================================================
 
 dummy_input = torch.randn(
@@ -60,7 +58,7 @@ dummy_input = torch.randn(
 
 
 # ============================================================
-# Create Vitis AI Inspector
+# Create Inspector
 # ============================================================
 
 inspector = Inspector(
@@ -73,14 +71,27 @@ inspector = Inspector(
 # ============================================================
 
 print("=" * 60)
-print(" VITIS AI DPU INSPECTION")
+print("VITIS AI DPU INSPECTION")
 print("=" * 60)
 
-print("Project root     :", PROJECT_ROOT)
-print("DPU architecture :", DPU_ARCH)
-print("Input shape      :", tuple(dummy_input.shape))
+print(
+    "Project root     :",
+    PROJECT_ROOT
+)
 
-print("\nStarting inspection...\n")
+print(
+    "DPU architecture :",
+    DPU_ARCH
+)
+
+print(
+    "Input shape      :",
+    tuple(dummy_input.shape)
+)
+
+print()
+print("Starting inspection...")
+print()
 
 inspector.inspect(
     model,
@@ -88,4 +99,5 @@ inspector.inspect(
     device=torch.device("cpu")
 )
 
-print("\nInspection completed.")
+print()
+print("Inspection completed.")
