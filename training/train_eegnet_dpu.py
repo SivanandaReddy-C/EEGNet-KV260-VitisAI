@@ -1,102 +1,119 @@
+import os
 import random
-from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
+
+from torch.utils.data import TensorDataset, DataLoader
+
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
     recall_score,
-    f1_score
+    f1_score,
+    confusion_matrix,
 )
 
 from eegnet_dpu import EEGNetDPU
 
 
 # ============================================================
-# Configuration
+# 1. Reproducibility
 # ============================================================
 
 SEED = 42
-
-BATCH_SIZE = 32
-EPOCHS = 100
-
-LEARNING_RATE = 0.001
-WEIGHT_DECAY = 1e-4
-
-NUM_CLASSES = 4
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-DATA_FILE = (
-    PROJECT_ROOT
-    / "datasets"
-    / "processed"
-    / "EEGNet_train_test_split.npz"
-)
-
-MODEL_DIR = PROJECT_ROOT / "models"
-
-MODEL_FILE = (
-    MODEL_DIR
-    / "EEGNetDPU_Experiment2_FP32.pth"
-)
-
-
-# ============================================================
-# Reproducibility
-# ============================================================
 
 random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 
 if torch.cuda.is_available():
+
+    torch.cuda.manual_seed(SEED)
     torch.cuda.manual_seed_all(SEED)
 
-
-# ============================================================
-# Header
-# ============================================================
-
-print("=" * 70)
-print(" EEGNet DPU-COMPATIBLE TRAINING - EXPERIMENT 2")
-print("=" * 70)
-
-print("Seed           :", SEED)
-print("Batch size     :", BATCH_SIZE)
-print("Epochs         :", EPOCHS)
-print("Learning rate  :", LEARNING_RATE)
-print("Weight decay   :", WEIGHT_DECAY)
-
-print()
-print("Dataset        :", DATA_FILE)
-print("Model output   :", MODEL_FILE)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 # ============================================================
-# Device
+# 2. Configuration
+# ============================================================
+
+DATASET_PATH = (
+    "datasets/processed/"
+    "EEGNet_train_test_split.npz"
+)
+
+MODEL_PATH = (
+    "models/EEGNetDPU_FP32.pth"
+)
+
+BATCH_SIZE = 32
+EPOCHS = 100
+LEARNING_RATE = 0.001
+WEIGHT_DECAY = 1e-4
+
+
+# ============================================================
+# 3. Device
 # ============================================================
 
 device = torch.device(
-    "cuda" if torch.cuda.is_available() else "cpu"
+    "cuda"
+    if torch.cuda.is_available()
+    else "cpu"
+)
+
+
+print("=" * 70)
+print("Final EEGNet-DPU Training")
+print("=" * 70)
+
+print(
+    f"Device          : {device}"
+)
+
+if device.type == "cuda":
+
+    print(
+        "GPU             :",
+        torch.cuda.get_device_name(0)
+    )
+
+print(
+    f"Seed            : {SEED}"
+)
+
+print(
+    f"Batch size      : {BATCH_SIZE}"
+)
+
+print(
+    f"Epochs          : {EPOCHS}"
+)
+
+print(
+    f"Learning rate   : {LEARNING_RATE}"
+)
+
+print(
+    f"Weight decay    : {WEIGHT_DECAY}"
 )
 
 print()
-print("Device         :", device)
 
 
 # ============================================================
-# Load frozen train/test split
+# 4. Load frozen train/test split
 # ============================================================
 
-print()
 print("Loading frozen train/test split...")
 
-data = np.load(DATA_FILE)
+data = np.load(
+    DATASET_PATH
+)
 
 X_train = data["X_train"]
 y_train = data["y_train"]
@@ -104,35 +121,53 @@ y_train = data["y_train"]
 X_test = data["X_test"]
 y_test = data["y_test"]
 
-print("X_train shape  :", X_train.shape)
-print("y_train shape  :", y_train.shape)
-print("X_test shape   :", X_test.shape)
-print("y_test shape   :", y_test.shape)
+
+print(
+    "X_train shape   :",
+    X_train.shape
+)
+
+print(
+    "y_train shape   :",
+    y_train.shape
+)
+
+print(
+    "X_test shape    :",
+    X_test.shape
+)
+
+print(
+    "y_test shape    :",
+    y_test.shape
+)
+
+print()
 
 
 # ============================================================
-# Convert to PyTorch tensors
+# 5. Convert to PyTorch tensors
 # ============================================================
 
 X_train_tensor = torch.from_numpy(
-    X_train.astype(np.float32)
-)
+    X_train
+).float()
 
 y_train_tensor = torch.from_numpy(
-    y_train.astype(np.int64)
-)
+    y_train
+).long()
 
 X_test_tensor = torch.from_numpy(
-    X_test.astype(np.float32)
-)
+    X_test
+).float()
 
 y_test_tensor = torch.from_numpy(
-    y_test.astype(np.int64)
-)
+    y_test
+).long()
 
 
 # ============================================================
-# DataLoaders
+# 6. Create datasets
 # ============================================================
 
 train_dataset = TensorDataset(
@@ -145,48 +180,78 @@ test_dataset = TensorDataset(
     y_test_tensor
 )
 
+
+# ============================================================
+# 7. Create DataLoaders
+# ============================================================
+
 train_loader = DataLoader(
     train_dataset,
     batch_size=BATCH_SIZE,
-    shuffle=True
+    shuffle=True,
+    num_workers=0,
+    pin_memory=(device.type == "cuda")
 )
 
 test_loader = DataLoader(
     test_dataset,
     batch_size=BATCH_SIZE,
-    shuffle=False
+    shuffle=False,
+    num_workers=0,
+    pin_memory=(device.type == "cuda")
 )
 
 
 # ============================================================
-# Model
+# 8. Create model
 # ============================================================
 
 model = EEGNetDPU(
-    num_classes=NUM_CLASSES
-)
+    num_classes=4
+).to(device)
 
-model = model.to(device)
 
 total_params = sum(
     p.numel()
     for p in model.parameters()
 )
 
+trainable_params = sum(
+    p.numel()
+    for p in model.parameters()
+    if p.requires_grad
+)
+
+
+print("Model")
+print("-" * 70)
+
+print(model)
+
 print()
-print("Model          : EEGNetDPU")
-print("Parameters     :", total_params)
+
+print(
+    f"Total parameters     : "
+    f"{total_params:,}"
+)
+
+print(
+    f"Trainable parameters : "
+    f"{trainable_params:,}"
+)
+
+print()
 
 
 # ============================================================
-# Loss
+# 9. Loss
 # ============================================================
 
 criterion = nn.CrossEntropyLoss()
 
 
 # ============================================================
-# Optimizer
+# 10. Optimizer
 # ============================================================
 
 optimizer = torch.optim.AdamW(
@@ -197,7 +262,7 @@ optimizer = torch.optim.AdamW(
 
 
 # ============================================================
-# Learning-rate scheduler
+# 11. Learning-rate scheduler
 # ============================================================
 
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -207,13 +272,13 @@ scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
 
 
 # ============================================================
-# Training
+# 12. Training
 # ============================================================
 
-print()
 print("=" * 70)
-print(" STARTING TRAINING - EXPERIMENT 2")
+print("Training")
 print("=" * 70)
+
 
 for epoch in range(EPOCHS):
 
@@ -223,26 +288,50 @@ for epoch in range(EPOCHS):
     correct = 0
     total = 0
 
+
+    # --------------------------------------------------------
+    # Training batches
+    # --------------------------------------------------------
+
     for inputs, labels in train_loader:
 
-        inputs = inputs.to(device)
-        labels = labels.to(device)
+        inputs = inputs.to(
+            device,
+            non_blocking=True
+        )
+
+        labels = labels.to(
+            device,
+            non_blocking=True
+        )
+
 
         optimizer.zero_grad()
 
+
+        # Forward
         outputs = model(inputs)
 
+
+        # Loss
         loss = criterion(
             outputs,
             labels
         )
 
+
+        # Backpropagation
         loss.backward()
 
+
+        # Update weights
         optimizer.step()
 
+
+        # Statistics
         running_loss += (
-            loss.item() * inputs.size(0)
+            loss.item()
+            * inputs.size(0)
         )
 
         predictions = torch.argmax(
@@ -256,40 +345,68 @@ for epoch in range(EPOCHS):
 
         total += labels.size(0)
 
-    epoch_loss = running_loss / total
-    epoch_accuracy = correct / total
 
-    current_lr = optimizer.param_groups[0]["lr"]
+    # --------------------------------------------------------
+    # Epoch training metrics
+    # --------------------------------------------------------
 
-    print(
-        f"Epoch [{epoch + 1:03d}/{EPOCHS}] "
-        f"Loss: {epoch_loss:.4f} "
-        f"Train Accuracy: {epoch_accuracy * 100:.2f}% "
-        f"LR: {current_lr:.6f}"
+    train_loss = (
+        running_loss / total
     )
+
+    train_accuracy = (
+        correct / total
+    )
+
+
+    # --------------------------------------------------------
+    # Scheduler
+    # --------------------------------------------------------
 
     scheduler.step()
 
+    current_lr = (
+        optimizer.param_groups[0]["lr"]
+    )
+
+
+    # --------------------------------------------------------
+    # Display
+    # --------------------------------------------------------
+
+    print(
+        f"Epoch [{epoch + 1:3d}/{EPOCHS}] "
+        f"Loss: {train_loss:.4f} "
+        f"Train Acc: "
+        f"{train_accuracy * 100:.2f}% "
+        f"LR: {current_lr:.6f}"
+    )
+
 
 # ============================================================
-# Final test-set evaluation
+# 13. Final evaluation on frozen test set
 # ============================================================
 
 print()
 print("=" * 70)
-print(" FINAL TEST SET EVALUATION - EXPERIMENT 2")
+print("Final Test Evaluation")
 print("=" * 70)
+
 
 model.eval()
 
 all_predictions = []
 all_labels = []
 
+
 with torch.no_grad():
 
     for inputs, labels in test_loader:
 
-        inputs = inputs.to(device)
+        inputs = inputs.to(
+            device,
+            non_blocking=True
+        )
 
         outputs = model(inputs)
 
@@ -297,6 +414,7 @@ with torch.no_grad():
             outputs,
             dim=1
         )
+
 
         all_predictions.extend(
             predictions.cpu().numpy()
@@ -307,8 +425,17 @@ with torch.no_grad():
         )
 
 
+all_predictions = np.array(
+    all_predictions
+)
+
+all_labels = np.array(
+    all_labels
+)
+
+
 # ============================================================
-# Metrics
+# 14. Metrics
 # ============================================================
 
 accuracy = accuracy_score(
@@ -337,33 +464,101 @@ f1 = f1_score(
     zero_division=0
 )
 
+cm = confusion_matrix(
+    all_labels,
+    all_predictions
+)
+
+
+print(
+    f"Test Accuracy  : "
+    f"{accuracy * 100:.2f}%"
+)
+
+print(
+    f"Test Precision  : "
+    f"{precision * 100:.2f}%"
+)
+
+print(
+    f"Test Recall     : "
+    f"{recall * 100:.2f}%"
+)
+
+print(
+    f"Test F1-score   : "
+    f"{f1 * 100:.2f}%"
+)
 
 print()
-print(f"Accuracy   : {accuracy * 100:.2f}%")
-print(f"Precision  : {precision * 100:.2f}%")
-print(f"Recall     : {recall * 100:.2f}%")
-print(f"F1-Score   : {f1 * 100:.2f}%")
+
+print("Confusion Matrix")
+print("-" * 70)
+
+print(cm)
+
+print()
 
 
 # ============================================================
-# Save model
+# 15. Save trained FP32 model
 # ============================================================
 
-MODEL_DIR.mkdir(
-    parents=True,
+os.makedirs(
+    os.path.dirname(MODEL_PATH),
     exist_ok=True
 )
 
+
 torch.save(
-    model.state_dict(),
-    MODEL_FILE
+    {
+        "model_state_dict":
+            model.state_dict(),
+
+        "model_class":
+            "EEGNetDPU",
+
+        "num_classes":
+            4,
+
+        "input_shape":
+            [1, 1, 22, 1000],
+
+        "seed":
+            SEED,
+
+        "epochs":
+            EPOCHS,
+
+        "batch_size":
+            BATCH_SIZE,
+
+        "learning_rate":
+            LEARNING_RATE,
+
+        "weight_decay":
+            WEIGHT_DECAY,
+
+        "test_accuracy":
+            accuracy,
+
+        "test_precision":
+            precision,
+
+        "test_recall":
+            recall,
+
+        "test_f1":
+            f1,
+    },
+    MODEL_PATH
 )
 
-print()
-print("Model saved to:")
-print(MODEL_FILE)
 
-print()
 print("=" * 70)
-print(" EXPERIMENT 2 TRAINING COMPLETED")
+print("Training completed")
 print("=" * 70)
+
+print(
+    f"Model saved to: {MODEL_PATH}"
+)

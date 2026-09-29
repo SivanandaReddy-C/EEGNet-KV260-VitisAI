@@ -3,13 +3,28 @@ import torch.nn as nn
 
 
 class EEGNetDPU(nn.Module):
+    """
+    Final DPU-compatible EEGNet architecture for KV260.
+
+    Target:
+        DPUCZDX8G_ISA1_B4096
+
+    Input:
+        [N, 1, 22, 1000]
+
+    Output:
+        [N, 4]
+
+    This architecture uses only ordinary Conv2D operations.
+    No depthwise/grouped convolution is used.
+    """
 
     def __init__(self, num_classes=4):
         super().__init__()
 
-        # ==================================================
+        # =====================================================
         # Block 1: Temporal feature extraction
-        # ==================================================
+        # =====================================================
 
         self.temporal_conv1 = nn.Conv2d(
             in_channels=1,
@@ -23,7 +38,6 @@ class EEGNetDPU(nn.Module):
         self.temporal_bn1 = nn.BatchNorm2d(16)
         self.temporal_relu1 = nn.ReLU()
 
-        # Additional temporal filtering
         self.temporal_conv2 = nn.Conv2d(
             in_channels=16,
             out_channels=16,
@@ -36,7 +50,6 @@ class EEGNetDPU(nn.Module):
         self.temporal_bn2 = nn.BatchNorm2d(16)
         self.temporal_relu2 = nn.ReLU()
 
-        # Additional temporal filtering
         self.temporal_conv3 = nn.Conv2d(
             in_channels=16,
             out_channels=16,
@@ -49,16 +62,16 @@ class EEGNetDPU(nn.Module):
         self.temporal_bn3 = nn.BatchNorm2d(16)
         self.temporal_relu3 = nn.ReLU()
 
-        # ==================================================
+        # =====================================================
         # Block 2: Spatial feature extraction
         #
-        # 22 EEG channels
+        # 22 EEG channels:
         #
         # 22 -> 12 -> 1
         #
-        # Both kernels are <= 16.
-        # No depthwise convolution is used.
-        # ==================================================
+        # Kernel heights 11 and 12 are within the
+        # DPU-supported conventional Conv2D dimensions.
+        # =====================================================
 
         self.spatial_conv1 = nn.Conv2d(
             in_channels=16,
@@ -84,18 +97,18 @@ class EEGNetDPU(nn.Module):
         self.spatial_bn2 = nn.BatchNorm2d(32)
         self.spatial_relu2 = nn.ReLU()
 
-        # ==================================================
+        # =====================================================
         # Temporal downsampling
-        # ==================================================
+        # =====================================================
 
         self.pool1 = nn.AvgPool2d(
             kernel_size=(1, 4),
             stride=(1, 4)
         )
 
-        # ==================================================
+        # =====================================================
         # Block 3: Temporal feature extraction
-        # ==================================================
+        # =====================================================
 
         self.temporal_conv4 = nn.Conv2d(
             in_channels=32,
@@ -109,9 +122,9 @@ class EEGNetDPU(nn.Module):
         self.temporal_bn4 = nn.BatchNorm2d(32)
         self.temporal_relu4 = nn.ReLU()
 
-        # ==================================================
+        # =====================================================
         # Block 4: Channel mixing
-        # ==================================================
+        # =====================================================
 
         self.pointwise_conv = nn.Conv2d(
             in_channels=32,
@@ -125,18 +138,23 @@ class EEGNetDPU(nn.Module):
         self.pointwise_bn = nn.BatchNorm2d(16)
         self.pointwise_relu = nn.ReLU()
 
-        # ==================================================
+        # =====================================================
         # Temporal downsampling
-        # ==================================================
+        # =====================================================
 
         self.pool2 = nn.AvgPool2d(
             kernel_size=(1, 8),
             stride=(1, 8)
         )
 
-        # ==================================================
+        # =====================================================
         # Classifier
-        # ==================================================
+        #
+        # Final feature map:
+        # [N, 16, 1, 28]
+        #
+        # Flatten = 16 * 28 = 448
+        # =====================================================
 
         self.classifier = nn.Linear(
             16 * 28,
@@ -145,9 +163,9 @@ class EEGNetDPU(nn.Module):
 
     def forward(self, x):
 
-        # ==================================================
+        # =====================================================
         # Block 1: Temporal filtering
-        # ==================================================
+        # =====================================================
 
         x = self.temporal_conv1(x)
         x = self.temporal_bn1(x)
@@ -161,9 +179,9 @@ class EEGNetDPU(nn.Module):
         x = self.temporal_bn3(x)
         x = self.temporal_relu3(x)
 
-        # ==================================================
+        # =====================================================
         # Block 2: Spatial filtering
-        # ==================================================
+        # =====================================================
 
         x = self.spatial_conv1(x)
         x = self.spatial_bn1(x)
@@ -173,37 +191,37 @@ class EEGNetDPU(nn.Module):
         x = self.spatial_bn2(x)
         x = self.spatial_relu2(x)
 
-        # ==================================================
+        # =====================================================
         # Pool 1
-        # ==================================================
+        # =====================================================
 
         x = self.pool1(x)
 
-        # ==================================================
+        # =====================================================
         # Block 3: Temporal filtering
-        # ==================================================
+        # =====================================================
 
         x = self.temporal_conv4(x)
         x = self.temporal_bn4(x)
         x = self.temporal_relu4(x)
 
-        # ==================================================
+        # =====================================================
         # Block 4: Channel mixing
-        # ==================================================
+        # =====================================================
 
         x = self.pointwise_conv(x)
         x = self.pointwise_bn(x)
         x = self.pointwise_relu(x)
 
-        # ==================================================
+        # =====================================================
         # Pool 2
-        # ==================================================
+        # =====================================================
 
         x = self.pool2(x)
 
-        # ==================================================
+        # =====================================================
         # Classifier
-        # ==================================================
+        # =====================================================
 
         x = torch.flatten(x, start_dim=1)
 
@@ -212,18 +230,28 @@ class EEGNetDPU(nn.Module):
         return x
 
 
-# ==========================================================
+# =============================================================
 # Architecture verification
-# ==========================================================
+# =============================================================
 
 if __name__ == "__main__":
 
     model = EEGNetDPU(num_classes=4)
+
     model.eval()
 
     dummy_input = torch.randn(
-        1, 1, 22, 1000
+        1,
+        1,
+        22,
+        1000
     )
+
+    print("=" * 60)
+    print("Final EEGNet-DPU Architecture")
+    print("=" * 60)
+
+    print()
 
     with torch.no_grad():
 
@@ -292,9 +320,9 @@ if __name__ == "__main__":
         x = model.classifier(x)
         print("Output             :", tuple(x.shape))
 
-    # ======================================================
+    # =========================================================
     # Parameter count
-    # ======================================================
+    # =========================================================
 
     total_params = sum(
         p.numel()
@@ -310,3 +338,6 @@ if __name__ == "__main__":
     print()
     print("Total parameters    :", total_params)
     print("Trainable parameters:", trainable_params)
+
+    print()
+    print("Architecture verification completed.")
