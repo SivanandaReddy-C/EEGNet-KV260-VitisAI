@@ -793,6 +793,369 @@ KV260 evaluation      → X_test, y_test
 
 ## Step 15 — Design and Verify the Deployment-Oriented EEGNet Architecture
 
+### 1. Objective
+
+The EEG dataset, preprocessing pipeline, and train/test split are
+already frozen.
+
+The purpose of this step is to define the **final EEGNet architecture
+selected for the KV260 deployment workflow**.
+
+We are no longer using this document to record architecture experiments
+or tuning attempts. The architecture below is the model that will be
+taken forward through the Vitis AI deployment flow.
+
+### 2. Target DPU
+
+``` text
+DPUCZDX8G_ISA1_B4096
+```
+
+Target input:
+
+``` text
+[1, 1, 22, 1000]
+```
+
+### 3. Final architecture
+
+The final model uses standard `Conv2D`, `BatchNorm2d`, `ReLU`,
+`AvgPool2d`, `Flatten`, and `Linear` operations.
+
+No depthwise convolution is used in the final deployment model.
+
+``` text
+Input
+[1, 1, 22, 1000]
+        │
+        ▼
+Temporal Conv2D
+1 → 16
+kernel = (1,16)
+        │
+        ▼
+BatchNorm + ReLU
+        │
+        ▼
+Temporal Conv2D
+16 → 16
+kernel = (1,16)
+        │
+        ▼
+BatchNorm + ReLU
+        │
+        ▼
+Temporal Conv2D
+16 → 16
+kernel = (1,16)
+        │
+        ▼
+BatchNorm + ReLU
+        │
+        ▼
+Spatial Conv2D
+16 → 32
+kernel = (11,1)
+        │
+        ▼
+BatchNorm + ReLU
+        │
+        ▼
+Spatial Conv2D
+32 → 32
+kernel = (12,1)
+        │
+        ▼
+BatchNorm + ReLU
+        │
+        ▼
+AveragePool2D
+kernel = (1,4)
+stride = (1,4)
+        │
+        ▼
+Temporal Conv2D
+32 → 32
+kernel = (1,8)
+        │
+        ▼
+BatchNorm + ReLU
+        │
+        ▼
+Pointwise Conv2D
+32 → 16
+kernel = (1,1)
+        │
+        ▼
+BatchNorm + ReLU
+        │
+        ▼
+AveragePool2D
+kernel = (1,8)
+stride = (1,8)
+        │
+        ▼
+Flatten
+        │
+        ▼
+Linear
+448 → 4
+        │
+        ▼
+4 class logits
+```
+
+### 4. Tensor dimensions
+
+For an input tensor:
+
+``` text
+[1, 1, 22, 1000]
+```
+
+the final tensor progression is:
+
+  Stage             Output shape
+  ----------------- --------------------
+  Input             `(1, 1, 22, 1000)`
+  Temporal Conv 1   `(1, 16, 22, 985)`
+  Temporal Conv 2   `(1, 16, 22, 970)`
+  Temporal Conv 3   `(1, 16, 22, 955)`
+  Spatial Conv 1    `(1, 32, 12, 955)`
+  Spatial Conv 2    `(1, 32, 1, 955)`
+  Pool 1            `(1, 32, 1, 238)`
+  Temporal Conv 4   `(1, 32, 1, 231)`
+  Pointwise Conv    `(1, 16, 1, 231)`
+  Pool 2            `(1, 16, 1, 28)`
+  Flatten           `(1, 448)`
+  Output            `(1, 4)`
+
+The classifier therefore uses:
+
+``` text
+Linear(448, 4)
+```
+
+### 5. Model size
+
+``` text
+Total parameters     : 37,188
+Trainable parameters : 37,188
+```
+
+### 6. Model source
+
+The final architecture is implemented in:
+
+``` text
+training/eegnet_dpu.py
+```
+Do not modify this architecture during the deployment workflow.
+
+## Step 16 --- Verify the Final Architecture
+
+### 1. Environment
+
+Use the Vitis AI PyTorch environment for the DPU compatibility checks.
+
+``` bash
+cd /workspace/EEGNet-KV260-VitisAI
+```
+
+### 2. Verify tensor dimensions
+
+Run:
+
+``` bash
+python training/eegnet_dpu.py
+```
+
+The output must confirm:
+
+``` text
+Input              : (1, 1, 22, 1000)
+Temporal Conv 1    : (1, 16, 22, 985)
+Temporal Conv 2    : (1, 16, 22, 970)
+Temporal Conv 3    : (1, 16, 22, 955)
+Spatial Conv 1     : (1, 32, 12, 955)
+Spatial Conv 2     : (1, 32, 1, 955)
+Pool 1             : (1, 32, 1, 238)
+Temporal Conv 4    : (1, 32, 1, 231)
+Pointwise Conv     : (1, 16, 1, 231)
+Pool 2             : (1, 16, 1, 28)
+Flatten            : (1, 448)
+Output             : (1, 4)
+```
+## Step 17 --- Verify DPU Compatibility with Vitis AI Inspector
+
+### 1. Objective
+
+Verify that the final EEGNet architecture can be mapped to the target
+KV260 DPU.
+
+### 2. DPU target
+
+``` text
+DPUCZDX8G_ISA1_B4096
+```
+
+### 3. Run Inspector
+
+``` bash
+python scripts/07_inspect_eegnet_dpu.py
+```
+
+### 4. Required result
+
+The final architecture has been verified successfully by the Vitis AI
+Inspector.
+
+The decisive result is:
+
+``` text
+[VAIQ_NOTE]: All the operators are assigned to the DPU
+[VAIQ_NOTE]: =>Finish inspecting.
+Inspection completed.
+```
+
+Therefore:
+
+``` text
+DPUCZDX8G_ISA1_B4096
+        │
+        ▼
+Final EEGNet
+        │
+        ▼
+All operators → DPU
+```
+
+This architecture is now **frozen for deployment**.
+
+## Step 18 --- Train the Final DPU-Compatible EEGNet
+
+### 1. Objective
+
+Train the exact architecture that passed the Vitis AI Inspector.
+
+The frozen dataset split remains:
+
+``` text
+X_train : (2073, 1, 22, 1000)
+y_train : (2073,)
+
+X_test  : (519, 1, 22, 1000)
+y_test  : (519,)
+```
+
+The model is trained using:
+
+``` text
+datasets/processed/EEGNet_train_test_split.npz
+```
+
+No new train/test split is created.
+
+### 2. Training script
+
+Use:
+
+``` text
+training/train_eegnet_dpu.py
+```
+
+### 3. Model output
+
+Save the trained FP32 model as:
+
+``` text
+models/EEGNetDPU_FP32.pth
+```
+
+### 4. Recorded FP32 result
+
+The final training run produced:
+
+  Metric                Result
+  --------------- ------------
+  Test accuracy     **46.82%**
+  Precision         **47.64%**
+  Recall            **46.82%**
+  F1-score          **47.11%**
+
+This accuracy is recorded as the **FP32 software baseline for the
+deployment demonstration**. The objective of this project is the Vitis
+AI/KV260 deployment workflow rather than further EEGNet accuracy
+optimization.
+
+## Step 19: Inspect Trained FP32 Model for DPU Compatibility
+**Purpose**
+
+Verify that the trained FP32 model is compatible with the target KV260 DPU before INT8 quantization.
+
+**Input model:**
+```
+models/EEGNetDPU_FP32.pth
+```
+**Target DPU:**
+```
+DPUCZDX8G_ISA1_B4096
+```
+**Script**
+
+File:
+```
+scripts/08_inspect_trained_eegnet_dpu.py
+```
+The script:
+ - Reconstructs EEGNetDPU.
+ - Loads models/EEGNetDPU_FP32.pth.
+ - Creates a dummy input of (1, 1, 22, 1000).
+ - Runs the Vitis AI Inspector against DPUCZDX8G_ISA1_B4096.
+
+**Run**
+
+Run inside the Vitis AI PyTorch container:
+```
+cd /workspace/EEGNet-KV260-VitisAI
+python scripts/08_inspect_trained_eegnet_dpu.py
+```
+
+**Expected Result**
+Parameters       : 37188
+
+Trained FP32 model loaded successfully.
+
+[VAIQ_NOTE]: All the operators are assigned to the DPU
+[VAIQ_NOTE]: =>Finish inspecting.
+
+Inspection completed.
+Result
+```
+Inspection successful.
+```
+```
+Trained FP32 model loaded: ✓
+Parameters: 37,188
+Input: (1, 1, 22, 1000)
+Target: DPUCZDX8G_ISA1_B4096
+All operators assigned to DPU: ✓
+```
+The trained model is therefore ready for the next stage: Vitis AI INT8 quantization.
+
+
+
+
+
+
+
+
+
+
+
+
+
++++++++++++++++++++++++++++CSR++++++++++++++++++++++++++++++++++++++++
 We now have a validated and frozen EEG dataset:
 ```
 Input:  [N, 1, 22, 1000]
